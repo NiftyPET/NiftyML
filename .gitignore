@@ -1,0 +1,12 @@
+*.py[co]
+__pycache__/
+
+# build
+/niftypet/ml/_dist_ver.py
+/build/
+/dist/
+/*.egg*/
+
+/.coverage*
+/coverage.xml
+/.pytest_cache/
