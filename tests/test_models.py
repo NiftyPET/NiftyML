@@ -13,4 +13,4 @@ from niftypet import ml
 def test_models(ndim, input_channels):
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', module='tensorflow')
-        _ = ml.dcl2020((128,) * ndim + (input_channels,))
+        _ = ml.dcl2021((128,) * ndim + (input_channels,))

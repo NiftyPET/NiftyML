@@ -17,7 +17,7 @@ MAXPOOL_ND = {2: L.MaxPool1D, 3: L.MaxPool2D, 4: L.MaxPool3D}
 UPSAMPLE_ND = {2: L.UpSampling1D, 3: L.UpSampling2D, 4: L.UpSampling3D}
 
 
-def dcl2020(input_shape, n_filters=None, filter_sizes=None, activations=None, prenorm=None, eps=0,
+def dcl2021(input_shape, n_filters=None, filter_sizes=None, activations=None, prenorm=None, eps=0,
             lr=1e-3, dtype="float32"):
     """
     Micro-net implementation based on:

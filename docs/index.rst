@@ -15,9 +15,9 @@ Usage
 .. code:: python
 
     from niftypet import ml
-    ml.dcl2020(...)
+    ml.dcl2021(...)
 
-See examples_ for more.
+See `examples <./examples/>`_ for more.
 
 
 Acknowledgements
