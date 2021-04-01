@@ -9,8 +9,11 @@ with warnings.catch_warnings():
 from niftypet import ml
 
 
-@mark.parametrize("ndim,input_channels", [(2, 1), (3, 1), (2, 5), (3, 5)])
-def test_models(ndim, input_channels):
+@mark.parametrize("input_channels", [1, 2, 5])
+@mark.parametrize("ndim", [1, 2, 3])
+@mark.parametrize("model", ml.MODELS)
+def test_models(ndim, input_channels, model):
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', module='tensorflow')
-        _ = ml.dcl2021((128,) * ndim + (input_channels,))
+        net = model((128,) * ndim + (input_channels,))
+        assert hasattr(net, "fit")
