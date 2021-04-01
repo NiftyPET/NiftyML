@@ -66,6 +66,63 @@ def dcl2021(input_shape, n_filters=None, filter_sizes=None, activations=None, pr
     return model
 
 
+def xu2020(input_shape, residual_input_channel=0, lr=1e-3, dtype="float32"):
+    """
+    Residual U-net implementation based on:
+    J. Xu, et al. 2020 Medical Imaging: Image Process. p. 60
+    "Ultra-low-dose 18F-FDG brain PET/MR denoising using deep learning
+    and multi-contrast information"
+
+    Args:
+      input_shape (tuple): (num_slices, [[Z,] Y,] X, num_channels),
+        where channels has PET first.
+      residual_input_channel(int): input channel index to use for residual addition
+        [default: 0] for PET.
+    """
+    Conv = CONV_ND[len(input_shape)]
+    AvgPool = AVGPOOL_ND[len(input_shape)]
+    Upsample = UPSAMPLE_ND[len(input_shape)]
+
+    x = inputs = L.Input(input_shape, dtype=dtype)
+
+    def block(x, filters):
+        x = Conv(filters, 3, padding="same", use_bias=False, dtype=dtype)(x)
+        x = L.BatchNormalization(dtype=dtype)(x)
+        x = L.LeakyReLU(dtype=dtype)(x) # WARN: alpha value?
+        return x
+
+    # U-net
+    filters = [32, 64, 128, 256]
+    # # encode
+    convs = []
+    for i in filters[:-1]:
+        x = residual = block(x, filters=i)
+        x = block(x, filters=i)
+        x = L.Add()([x, residual])
+        convs.append(x)
+        x = AvgPool(dtype=dtype, padding="same")(x)
+    x = residual = block(x, filters=filters[-1])
+    x = block(x, filters=filters[-1])
+    x = L.Add()([x, residual])
+    # # decode
+    for i in filters[:-1][::-1]:
+        x = Upsample(dtype=dtype)(x)
+        x = L.Concatenate()([x, convs.pop()])
+        x = residual = block(x, filters=i)
+        x = block(x, filters=i)
+        x = L.Add()([x, residual])
+    x = Conv(1, 1, padding="same", dtype=dtype, name="residual")(x)
+    x = L.Add(name="generated")([
+        x, inputs[..., residual_input_channel:residual_input_channel + 1]])
+
+    model = keras.Model(inputs=inputs, outputs=x)
+    if lr:
+        opt = keras.optimizers.RMSprop(lr)
+        model.compile(opt, metrics=[nrmse], loss="mae")
+        model.summary(print_fn=log.debug)
+    return model
+
+
 def chen2019(input_shape, residual_input_channel=0, lr=2e-4, dtype="float32"):
     """
     Residual U-net implementation based on:
@@ -123,62 +180,6 @@ def chen2019(input_shape, residual_input_channel=0, lr=2e-4, dtype="float32"):
     return model
 
 
-def xu2020(input_shape, residual_input_channel=0, lr=1e-3, dtype="float32"):
-    """
-    Residual U-net implementation based on:
-    J. Xu, et al. 2020 Medical Imaging: Image Process. p. 60
-    "Ultra-low-dose 18F-FDG brain PET/MR denoising using deep learning and multi-contrast information"
-
-    Args:
-      input_shape (tuple): (num_slices, [[Z,] Y,] X, num_channels),
-        where channels has PET first.
-      residual_input_channel(int): input channel index to use for residual addition
-        [default: 0] for PET.
-    """
-    Conv = CONV_ND[len(input_shape)]
-    AvgPool = AVGPOOL_ND[len(input_shape)]
-    Upsample = UPSAMPLE_ND[len(input_shape)]
-
-    x = inputs = L.Input(input_shape, dtype=dtype)
-
-    def block(x, filters):
-        x = Conv(filters, 3, padding="same", use_bias=False, dtype=dtype)(x)
-        x = L.BatchNormalization(dtype=dtype)(x)
-        x = L.LeakyReLU(dtype=dtype)(x) # TODO: alpha value?
-        return x
-
-    # U-net
-    filters = [32, 64, 128, 256]
-    # # encode
-    convs = []
-    for i in filters[:-1]:
-        x = residual = block(x, filters=i)
-        x = block(x, filters=i)
-        x = L.Add()([x, residual])
-        convs.append(x)
-        x = AvgPool(dtype=dtype, padding="same")(x)
-    x = residual = block(x, filters=filters[-1])
-    x = block(x, filters=filters[-1])
-    x = L.Add()([x, residual])
-    # # decode
-    for i in filters[:-1][::-1]:
-        x = Upsample(dtype=dtype)(x)
-        x = L.Concatenate()([x, convs.pop()])
-        x = residual = block(x, filters=i)
-        x = block(x, filters=i)
-        x = L.Add()([x, residual])
-    x = Conv(1, 1, padding="same", dtype=dtype, name="residual")(x)
-    x = L.Add(name="generated")([
-        x, inputs[..., residual_input_channel:residual_input_channel + 1]])
-
-    model = keras.Model(inputs=inputs, outputs=x)
-    if lr:
-        opt = keras.optimizers.RMSprop(lr)
-        model.compile(opt, metrics=[nrmse], loss="mae")
-        model.summary(print_fn=log.debug)
-    return model
-
-
 
 
 def grid(input_shape, n_filters=None, filter_sizes=None, activations=None, concat=None,
@@ -217,7 +218,6 @@ def grid(input_shape, n_filters=None, filter_sizes=None, activations=None, conca
       n_filters=[32, 64, 128, 256, 128, 64, 32, 1, 1]
     """
     Conv = CONV_ND[len(input_shape)]
-    AvgPool = AVGPOOL_ND[len(input_shape)]
     Upsample = UPSAMPLE_ND[len(input_shape)]
 
     n_filters = n_filters or [32, 32, 1]
@@ -232,7 +232,7 @@ def grid(input_shape, n_filters=None, filter_sizes=None, activations=None, conca
     strides = strides or [1] * len(n_filters)
 
     Norm = functools.partial(NormLayer, eps=eps, std=True, batch=True)
-    largs = dict(kernel_initializer="he_normal", bias_initializer="he_normal", padding="same")
+    largs = {'kernel_initializer': 'he_normal', 'bias_initializer': 'he_normal', 'padding': 'same'}
     if l1reg:
         largs.update(
             kernel_regularizer=keras.regularizers.l1(l1reg),
@@ -270,4 +270,4 @@ def grid(input_shape, n_filters=None, filter_sizes=None, activations=None, conca
     return model
 
 
-MODELS = [dcl2021, chen2019, xu2020, grid]
+MODELS = [dcl2021, xu2020, chen2019, grid]
