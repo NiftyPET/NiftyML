@@ -1,5 +1,5 @@
 import logging
-from collections import Iterable
+from collections.abc import Iterable
 
 from tensorflow import keras
 from tensorflow import math as tfm
