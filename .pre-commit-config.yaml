@@ -26,20 +26,26 @@ repos:
     exclude: ^(.pre-commit-config.yaml|.github/workflows/test.yml)$
     args: [-i]
 - repo: https://gitlab.com/pycqa/flake8
-  rev: 3.8.4
+  rev: 3.9.0
   hooks:
   - id: flake8
+    args: ['-j8']
     additional_dependencies:
     - flake8-bugbear
     - flake8-comprehensions
     - flake8-debugger
     - flake8-string-format
 - repo: https://github.com/google/yapf
-  rev: 6db9374
+  rev: v0.31.0
   hooks:
   - id: yapf
     args: [-i]
 - repo: https://github.com/PyCQA/isort
-  rev: 5.7.0
+  rev: 5.8.0
   hooks:
   - id: isort
+- repo: https://github.com/kynan/nbstripout
+  rev: 0.3.9
+  hooks:
+  - id: nbstripout
+    args: ['--keep-count', '--keep-output']
