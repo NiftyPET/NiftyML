@@ -3,12 +3,16 @@ PET-MR denoising CNNs.
 """
 import functools
 import logging
+from contextlib import contextmanager
 
 import numpy as np
+import tensorflow as tf
 from tensorflow import keras
+from tensorflow import math as tfm
 
+from .layers import LocalityAdaptive
 from .layers import Norm as NormLayer
-from .layers import nrmse
+from .layers import PSFInit, blur, gradAndSq2D, gradAndSq3D, nrmse
 
 log = logging.getLogger(__name__)
 L = keras.layers
@@ -18,6 +22,7 @@ UPSAMPLE_ND = {
     2: L.UpSampling1D, 3: functools.partial(L.UpSampling2D, interpolation="bilinear"),
     4: L.UpSampling3D}
 AVGPOOL_ND = {2: L.AvgPool1D, 3: L.AvgPool2D, 4: L.AvgPool3D}
+GRADSQ_ND = {3: gradAndSq2D, 4: gradAndSq3D}
 
 
 def dcl2021(input_shape, n_filters=None, filter_sizes=None, activations=None, prenorm=None, eps=0,

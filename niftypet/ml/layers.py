@@ -1,15 +1,71 @@
 import logging
 from collections.abc import Iterable
 
+import numpy as np
+import tensorflow as tf
+from scipy.ndimage import gaussian_filter as blur
 from tensorflow import keras
 from tensorflow import math as tfm
 
+__all__ = ["LocalityAdaptive", "Norm", "PSFInit", "nrmse", "gradAndSq2D", "gradAndSq3D"]
 log = logging.getLogger(__name__)
 
 
 def nrmse(y_true, y_pred):
     return tfm.sqrt(
         tfm.reduce_mean(tfm.squared_difference(y_true, y_pred)) / tfm.reduce_mean(y_true**2))
+
+
+def gradAndSq2D(x):
+    """@return |dx|, dx^2"""
+    dy, dx = tf.image.image_gradients(x)
+    gradSq = tfm.abs(dy**2 + dx**2)[:, :-1, :-1]
+    grad = tfm.sqrt(gradSq)
+    return grad, gradSq
+
+
+def gradAndSq3D(x):
+    """@return |dx|, dx^2"""
+    knl = np.zeros([2, 2, 2, 1, 1], dtype=np.float32)
+    knl[0, 0, 0] = -1
+    dz = np.array(knl)
+    dz[1, 0, 0] = 1
+    dz = tf.nn.conv3d(x, dz, [1] * 5, "SAME")
+    dy = np.array(knl)
+    dy[0, 1, 0] = 1
+    dy = tf.nn.conv3d(x, dy, [1] * 5, "SAME")
+    dx = np.array(knl)
+    dx[0, 0, 1] = 1
+    dx = tf.nn.conv3d(x, dx, [1] * 5, "SAME")
+
+    gradSq = tfm.abs(dz**2 + dy**2 + dx**2)
+    grad = tfm.sqrt(gradSq)
+    return grad, gradSq
+
+
+class PSFInit(keras.initializers.Initializer):
+    def __init__(self, sigma=1.5):
+        """Gaussian width `sigma` for the specified channels"""
+        self.sigma = sigma
+
+    def __call__(self, shape, dtype=None):
+        assert shape[-1] == shape[-2], "Only for 1:1 channel mapping"
+        knl = np.zeros(shape, dtype=getattr(dtype, "as_numpy_dtype", dtype))
+        psf = np.zeros(shape[:-2], dtype=np.float64)
+        psf[tuple(slice(i // 2, 1 + i//2) for i in psf.shape)] = 1
+
+        if isinstance(self.sigma, Iterable):
+            assert len(self.sigma) == shape[-1], "len(sigma) does not match channels"
+            for i, s in enumerate(self.sigma):
+                knl[..., i, i] = blur(psf, sigma=s, mode="constant") if s else psf
+        else:
+            psfBlur = blur(psf, sigma=self.sigma, mode="constant")
+            for i in range(shape[-1]):
+                knl[..., i, i] = psfBlur
+        return knl
+
+    def get_config(self):
+        return {"sigma": self.sigma}
 
 
 class Norm(keras.layers.Layer):
