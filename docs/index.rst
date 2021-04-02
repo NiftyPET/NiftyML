@@ -8,6 +8,7 @@ Installation
 
 .. code:: sh
 
+    pip install tensorflow-gpu  # or CPU version: `pip install tensorflow`
     pip install niftyml
 
 
