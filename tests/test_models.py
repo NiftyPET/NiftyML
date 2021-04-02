@@ -1,6 +1,6 @@
 import warnings
 
-from pytest import mark
+from pytest import mark, skip
 
 with warnings.catch_warnings():
     warnings.simplefilter('ignore')
@@ -9,17 +9,22 @@ with warnings.catch_warnings():
 from niftypet import ml
 
 
-@mark.parametrize("input_channels", [1, 2, 5])
+@mark.parametrize("input_channels", [1, 2])
 @mark.parametrize("ndim", [1, 2, 3])
 @mark.parametrize("model", ml.MODELS)
 def test_models(ndim, input_channels, model):
+    try:
+        if issubclass(model, ml.models.GAN) and ndim == 1:
+            skip("GAN must have ndim>1")
+    except TypeError:
+        pass
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', module='tensorflow')
         net = model((128,) * ndim + (input_channels,))
-        assert hasattr(net, "fit")
+        assert hasattr(net, "fit") or isinstance(net, ml.models.GAN)
 
 
-@mark.parametrize("input_channels", [1, 2, 5])
+@mark.parametrize("input_channels", [1, 2])
 @mark.parametrize("ndim", [1, 2, 3])
 def test_grid_Unet(ndim, input_channels):
     with warnings.catch_warnings():

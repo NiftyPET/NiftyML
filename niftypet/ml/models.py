@@ -17,6 +17,7 @@ from .layers import PSFInit, blur, gradAndSq2D, gradAndSq3D, nrmse
 log = logging.getLogger(__name__)
 L = keras.layers
 CONV_ND = {2: L.Conv1D, 3: L.Conv2D, 4: L.Conv3D}
+CONVT_ND = {3: L.Conv2DTranspose, 4: L.Conv3DTranspose}
 MAXPOOL_ND = {2: L.MaxPool1D, 3: L.MaxPool2D, 4: L.MaxPool3D}
 UPSAMPLE_ND = {
     2: L.UpSampling1D, 3: functools.partial(L.UpSampling2D, interpolation="bilinear"),
@@ -185,6 +186,364 @@ def chen2019(input_shape, residual_input_channel=0, lr=2e-4, dtype="float32"):
     return model
 
 
+class GAN(object):
+    @staticmethod
+    def lossGen(y_true, y_pred):
+        """Generator loss (pre-discriminator)"""
+        return keras.losses.mean_squared_error(y_true, y_pred)
+
+    def lossDsc(self, y_true, y_pred, loss=keras.losses.binary_crossentropy):
+        """
+        Discriminator loss
+
+        loss(self.modelDsc(y_true), ones) + loss(self.modelDsc(y_pred), zeros)
+        """
+        ones = self.modelDsc(y_true)
+        zeros = self.modelDsc(y_pred)
+        return tfm.reduce_mean(loss(tf.ones_like(ones), ones) + loss(tf.zeros_like(zeros), zeros))
+
+    def _generator(self, input_shape):
+        """Returns a keras.Model"""
+        raise NotImplementedError
+
+    def _discriminator(self, input_shape):
+        """Returns a keras.Model"""
+        raise NotImplementedError
+
+    @contextmanager
+    def contextDsc(self):
+        """Usage:
+        ```
+        with self.contextDsc() as modelDsc:
+            modelDsc.train_on_batch(x, y_class)
+        modelGAN.train_on_batch(x, y)
+        ```
+        """
+        self.modelGAN.trainable = False
+        self.modelGen.trainable = False
+        self.modelDsc.trainable = True
+        yield self.modelDsc # WARN: should be modelAdv?
+        self.modelDsc.trainable = False
+        self.modelGen.trainable = True
+        self.modelGAN.trainable = True
+
+
+class GANConstant(GAN):
+    """GAN with custom list of (non-traininable) constants"""
+    def __init__(self, *args, **kwargs):
+        super(GANConstant, self).__init__(*args, **kwargs)
+        self.constants = []
+
+    def ensureConstants(self):
+        for i in self.constants:
+            i.trainable = False
+
+    @contextmanager
+    def contextDsc(self):
+        with super(GANConstant, self).contextDsc() as modelDsc:
+            self.ensureConstants()
+            yield modelDsc
+        self.ensureConstants()
+
+
+class Wang2019(GAN):
+    """
+    Locality Adaptive U-net GAN implementation based on:
+    Wang et al. 2019 TMI 38(6) 1328-1339
+    "3D Auto-Context-Based Locality Adaptive Multi-Modality GANs for PET Synthesis"
+    """
+    @staticmethod
+    def preProc(inputs, sigma=2, eps=0, channels=None):
+        """channels (list): (default: [0]) for PET"""
+        inputs = inputs.copy()
+        for ch in channels or [0]:
+            inputs[..., ch] = (blur(inputs[..., ch], sigma=(0,) + (sigma,) *
+                                    (inputs.ndim - 2), mode="constant") + eps)
+        return inputs
+
+    def __init__(
+            self,
+            input_shape,
+            lr=2e-4,                  # WARN: lr decay?
+            w1=200,
+            residual_input_channel=0,
+            dtype="float32"):
+        """
+        Args:
+          lr: learning rate
+          l1reg: traininable parameter L1 regularisation weight
+          w1: weight of generator loss
+          residual_input_channel: for PET
+        """
+        self.modelGen = self._generator(input_shape, lr=0, dtype=dtype)
+        self.modelGen.trainable = False
+
+        self.modelDsc = self._discriminator(self.modelGen.output_shape[1:-1] + (2,), lr=lr,
+                                            dtype=dtype)
+        self.modelDsc.trainable = False
+
+        # GAN
+        x = inputs = L.Input(input_shape, dtype=dtype)
+        inputs_low = inputs[..., residual_input_channel:residual_input_channel + 1]
+        x = generated = self.modelGen(x)
+        x = L.concatenate([inputs_low, generated])
+        x = discriminated = self.modelDsc(x)
+
+        model = keras.Model(inputs=inputs, outputs=[generated, discriminated], name="GAN")
+
+        self.modelGen.trainable = True
+        opt = keras.optimizers.Adam(lr)
+        model.compile(opt, metrics=[[nrmse], ["accuracy"]], loss=["mae", "binary_crossentropy"],
+                      loss_weights=[w1, -1])
+        model.summary(print_fn=log.debug)
+        self.modelGAN = model
+        self.modelGAN.trainable = False
+
+    def _get_block(self, input_shape, dtype="float32"):
+        Conv = CONV_ND[len(input_shape)]
+        ConvTranspose = CONVT_ND[len(input_shape)]
+
+        def block(x, filters, transpose=False, padding="same", **kwargs):
+            x = (ConvTranspose if transpose else Conv)(filters, 4, strides=2, padding=padding,
+                                                       use_bias=False, dtype=dtype)(x)
+            x = L.BatchNormalization(dtype=dtype)(x)
+            x = L.LeakyReLU(0.2, dtype=dtype, **kwargs)(x)
+            return x
+
+        return block
+
+    def _generator(self, input_shape, lr=2e-4, dtype="float32", dropout=0):
+        """
+        @return `Model` mapping `input_shape` => `input_shape[:-1] + (1,)`
+        """
+        block = self._get_block(input_shape, dtype=dtype)
+
+        x = inputs = L.Input(input_shape, dtype=dtype)
+
+        x = LocalityAdaptive(roi_size=8)(x) # WARN: dtype
+
+        encLayer = functools.partial(block, transpose=False)
+
+        def decLayer(x, filters, concat=None, name=None):
+            kwargs = {}
+            if concat is None and name is not None:
+                kwargs['name'] = name
+            x = block(x, filters, transpose=True, **kwargs)
+            if concat is not None:
+                if name is not None:
+                    kwargs['name'] = name
+                x = L.Concatenate(**kwargs)([x, concat])
+            return x
+
+        # U-net
+        filters = [64, 128, 256, 512, 512, 512]
+        # # encode
+        convs = []
+        for i in filters:
+            x = encLayer(x, filters=i)
+            convs.append(x)
+        convs.pop()
+        # # decode
+        for i in filters[:-1][::-1]:
+            x = decLayer(x, filters=i, concat=convs.pop())
+        x = decLayer(x, filters=1, name="generated")
+
+        model = keras.Model(inputs=inputs, outputs=x, name="Gen")
+        if lr:
+            opt = keras.optimizers.Adam(lr)
+            model.compile(opt, metrics=[nrmse], loss="mae")
+            model.summary(print_fn=log.debug)
+        return model
+
+    def _discriminator(self, input_shape, lr=2e-4, dtype="float32", dropout=0):
+        """
+        @return `Model` mapping `input_shape` => `(1,)`
+        """
+        Conv = CONV_ND[len(input_shape)]
+        block = self._get_block(input_shape, dtype=dtype)
+
+        x = L.Input(input_shape, dtype=dtype)
+        inputs = x
+
+        filters = [64, 128, 256, 512]
+        for i in filters:
+            x = block(x, filters=i)
+        # fully connected isn't the same as dense: need output shape 1, not H x W( x D) x 1
+        x = Conv(1, x.shape[1:-1].as_list(), padding="valid", activation="sigmoid")(x)
+        x = L.Reshape((1,), name="discriminated")(x)
+
+        model = keras.Model(inputs=inputs, outputs=x, name="Dsc")
+        if lr:
+            opt = keras.optimizers.Adam(lr)
+            model.compile(opt, loss="binary_crossentropy", metrics=["accuracy"])
+            model.summary(print_fn=log.debug)
+        return model
+
+
+class Kaplan2018(GANConstant):
+    """
+    U-net GAN with TV & gradient loss implementation based on:
+    Kaplan & Zhu 2018 J. Digit. Imaging 3
+    "Full-Dose PET Image Estimation from Low-Dose PET Image Using Deep Learning: a Pilot Study"
+    """
+    def _get_lossGen(self, input_shape, w1, w2, w3):
+        gradAndSq = GRADSQ_ND[len(input_shape)]
+
+        def genLoss(y_true, y_pred):
+            gradT, _ = gradAndSq(y_true)
+            gradP, gradSqP = gradAndSq(y_pred)
+            return (w1 * tfm.reduce_mean(tfm.squared_difference(y_true, y_pred)) +
+                    w2 * tfm.reduce_mean(gradSqP) +
+                    w3 * tfm.reduce_mean(tfm.squared_difference(gradT, gradP)))
+
+        return genLoss
+
+    def _get_block(self, input_shape, dtype="float32"):
+        Conv = CONV_ND[len(input_shape)]
+        ConvTranspose = CONVT_ND[len(input_shape)]
+
+        def block(x, filters, kernel_size=3, transpose=False, padding="same", activation="elu",
+                  strides=2, **largs):
+            x = (ConvTranspose if transpose else Conv)(filters, kernel_size, strides=strides,
+                                                       activation=activation, padding=padding,
+                                                       dtype=dtype, **largs)(x)
+            return x
+
+        return block
+
+    def __init__(self, input_shape, sigma=1.5, w1=1, w2=-5e-5, w3=0.075, w4=0.1, n_filters=None,
+                 activations=None, residual_input_channel=0, lr=1e-3, l1reg=1e-4, dtype="float32"):
+        """
+        Args:
+          lr: learning rate
+          l1reg: traininable parameter L1 regularisation weight
+          w1, w2, w3: generator loss weights
+          w4: discriminator loss weight
+          n_filters: for generator, discriminator layers (default: [128, 64])
+          activations: for generator, discriminator layers (default: ["elu", "tanh"])
+        """
+        super(Kaplan2018, self).__init__()
+        if n_filters is None:
+            n_filters = [128, 64]
+        if activations is None:
+            activations = ["elu", "tanh"]
+        largs = {
+            'dtype': dtype, 'lr': lr,
+            'kernel_regularizer': keras.regularizers.l1(l1reg) if l1reg else None,
+            'bias_regularizer': keras.regularizers.l1(l1reg) if l1reg else None}
+
+        self.modelGen = self._generator(input_shape, sigma=sigma, filters=n_filters[0], strides=2,
+                                        activation=activations[0], padding="same", w1=w1, w2=w2,
+                                        w3=w3, residual_input_channel=residual_input_channel,
+                                        **largs)
+        self.modelGen.trainable = False
+
+        self.modelDsc = self._discriminator(self.modelGen.output_shape[1:], filters=n_filters[1],
+                                            strides=1, activation=activations[1], **largs)
+        self.modelDsc.trainable = False
+
+        # GAN
+        x = inputs = L.Input(input_shape)
+        x = generated = self.modelGen(x)
+        # inputs_low = inputs[..., -1:]
+        # x = L.concatenate([inputs_low, generated])
+        x = discriminated = self.modelDsc(x)
+
+        model = keras.Model(inputs=inputs, outputs=[generated, discriminated], name="GAN")
+
+        # WARN: adam_lr(init=lr, epoch=100) / 10
+        opt = keras.optimizers.Adam(lr / 10)
+        self.modelGen.trainable = True
+        self.modelDsc.trainable = False
+        self.ensureConstants()
+        model.compile(
+            opt,
+            metrics=[[nrmse], ["accuracy"]],
+            loss=[self._get_lossGen(input_shape, w1, w2, w3), "binary_crossentropy"],
+            loss_weights=[1, -w4],
+        )
+        model.summary(print_fn=log.debug)
+        self.modelGAN = model
+        self.modelGAN.trainable = False
+
+    @staticmethod
+    def preProc(inputs, sigma=1.5, eps=0):
+        return blur(inputs, sigma=(0,) + (sigma,) * (inputs.ndim - 2) +
+                    (0,), mode="constant") + eps
+
+    def _generator(self, input_shape, sigma=1.5, filters=128, w1=1, w2=-5e-5, w3=0.075, lr=1e-3,
+                   residual_input_channel=0, dtype="float32", pre_filter=True, **largs):
+        """
+        Args:
+          pre_filter: if [default: True], no need to manually call `preProc()`
+          **largs:  anything supported by tf.keras.layers.Conv*
+        """
+        Conv = CONV_ND[len(input_shape)]
+        block = self._get_block(input_shape, dtype=dtype)
+        block = functools.partial(block, **largs)
+
+        x = inputs = L.Input(input_shape, dtype=dtype)
+        if pre_filter:
+            preProc = Conv(
+                input_shape[-1],
+                int(np.ceil(sigma * 4)) * 2 + 1,
+                padding="same",
+                use_bias=False,
+                kernel_initializer=PSFInit(sigma=(0,) * (input_shape[-1] - 1) + (sigma,)),
+                dtype=dtype,
+            )
+            self.constants.append(preProc)
+            x = filtered_inputs = preProc(x)
+        else:
+            filtered_inputs = x
+
+        # U-net
+        # # encode
+        convs = []
+        for _ in range(4):
+            x = block(x, filters, transpose=False)
+            convs.append(x)
+        convs.pop()
+        # # decode
+        for _ in range(len(convs)):
+            x = block(x, filters, transpose=True)
+            x = L.Add()([x, convs.pop()])
+        # # residual
+        x = block(x, 1, transpose=True)
+        x = L.Add(name="generated")([
+            filtered_inputs[..., residual_input_channel:residual_input_channel + 1], x])
+
+        model = keras.Model(inputs=inputs, outputs=x, name="Gen")
+        if lr:
+            opt = keras.optimizers.Adam(lr)
+            self.ensureConstants()
+            model.compile(opt, metrics=[nrmse], loss=self._get_lossGen(input_shape, w1, w2, w3))
+            model.summary(print_fn=log.debug)
+        return model
+
+    def _discriminator(self, input_shape, filters=64, lr=1e-3, dtype="float32", **largs):
+        block = self._get_block(input_shape, dtype=dtype)
+        block = functools.partial(block, **largs)
+
+        x = inputs = L.Input(input_shape, dtype=dtype)
+        x = block(x, filters, padding="same")
+        # fully connected isn't the same as dense: need output shape 1, not H x W( x D) x 1
+        # x = block(x, 1, kernel_size=x.shape[1:-1].as_list(), padding="valid")
+        x = block(x, 1, kernel_size=16, padding="valid")
+        # per-patch prediction
+        x = L.Activation("sigmoid")(x)
+        # average patches
+        x = L.Lambda(lambda i: tfm.reduce_mean(i, axis=range(1, len(input_shape))),
+                     name="discriminated")(x)
+        # x = L.Reshape((1,))(x)
+
+        model = keras.Model(inputs=inputs, outputs=x, name="Dsc")
+        if lr:
+            opt = keras.optimizers.Adam(lr)
+            self.ensureConstants()
+            model.compile(opt, loss="binary_crossentropy", metrics=["accuracy"])
+            model.summary(print_fn=log.debug)
+        return model
 
 
 def grid(input_shape, n_filters=None, filter_sizes=None, activations=None, concat=None,
@@ -202,7 +561,7 @@ def grid(input_shape, n_filters=None, filter_sizes=None, activations=None, conca
     - dcl2021: He normal weights initialisation
     - dcl2021: Initial normalisation (mean & std for MR; std for PET)
     - dcl2021: NRMSE loss
-    - kaplan2018: l1 regularisation
+    - Kaplan2018: l1 regularisation
     - downsampling: strided convolution
     - upsampling: bilinear interpolation followed by stride-1 convolution
 
@@ -275,4 +634,4 @@ def grid(input_shape, n_filters=None, filter_sizes=None, activations=None, conca
     return model
 
 
-MODELS = [dcl2021, xu2020, chen2019, grid]
+MODELS = [dcl2021, xu2020, chen2019, Wang2019, Kaplan2018, grid]
