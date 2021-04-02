@@ -1,7 +1,7 @@
 PET-MR with Machine Learning
 ============================
 
-|Docs| |Version| |Py-Versions| |DOI| |Licence| |Tests|
+|Docs| |Version| |Py-Versions| |DOI| |Licence| |Tests| |Coverage|
 
 See `www.nifty.ml <https://www.nifty.ml/en/latest>`_ for documentation.
 
@@ -13,6 +13,8 @@ See `www.nifty.ml <https://www.nifty.ml/en/latest>`_ for documentation.
    :target: https://github.com/NiftyPET/NiftyML/blob/master/LICENCE
 .. |Tests| image:: https://img.shields.io/github/workflow/status/NiftyPET/NiftyML/Test?logo=GitHub
    :target: https://github.com/NiftyPET/NiftyML/actions
+.. |Coverage| image:: https://codecov.io/gh/NiftyPET/NiftyML/branch/master/graph/badge.svg
+   :target: https://codecov.io/gh/NiftyPET/NiftyML
 .. |Version| image:: https://img.shields.io/pypi/v/niftyml.svg?logo=python&logoColor=white
    :target: https://github.com/NiftyPET/NiftyML/releases
 .. |Py-Versions| image:: https://img.shields.io/pypi/pyversions/niftyml.svg?logo=python&logoColor=white

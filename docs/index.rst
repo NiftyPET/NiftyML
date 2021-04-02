@@ -1,7 +1,7 @@
 NiftyML: PET-MR with Machine Learning
 =====================================
 
-|Version| |Py-Versions| |DOI| |Licence| |Tests|
+|Version| |Py-Versions| |DOI| |Licence| |Tests| |Coverage|
 
 Installation
 ------------
@@ -37,6 +37,8 @@ This work was supported in part by the King's College London and Imperial Colleg
    :target: https://github.com/NiftyPET/NiftyML/blob/master/LICENCE
 .. |Tests| image:: https://img.shields.io/github/workflow/status/NiftyPET/NiftyML/Test?logo=GitHub
    :target: https://github.com/NiftyPET/NiftyML/actions
+.. |Coverage| image:: https://codecov.io/gh/NiftyPET/NiftyML/branch/master/graph/badge.svg
+   :target: https://codecov.io/gh/NiftyPET/NiftyML
 .. |Version| image:: https://img.shields.io/pypi/v/niftyml.svg?logo=python&logoColor=white
    :target: https://github.com/NiftyPET/NiftyML/releases
 .. |Py-Versions| image:: https://img.shields.io/pypi/pyversions/niftyml.svg?logo=python&logoColor=white
