@@ -21,7 +21,7 @@ copyright = '2021, Casper da Costa-Luis'
 author = 'Casper da Costa-Luis'
 
 # The full version, including alpha/beta/rc tags
-release = 'v0.0.0'
+release = 'v1.0.0'
 
 # -- General configuration ---------------------------------------------------
 
