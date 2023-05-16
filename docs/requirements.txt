@@ -1,1 +1,2 @@
 nbsphinx
+tornado>=6.3.2 # not directly required, pinned by Snyk to avoid a vulnerability
